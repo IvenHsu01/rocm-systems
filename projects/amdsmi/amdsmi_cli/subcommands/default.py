@@ -23,6 +23,7 @@ class DefaultCommands:
         version_info = {
             "amd-smi": "N/A",
             "amdgpu version": "N/A",
+            "amdgpu dkms version": "N/A",
             "kernel version": "N/A",
             "fw pldm version": "N/A",
             "vbios version": "N/A",
@@ -43,6 +44,11 @@ class DefaultCommands:
         except amdsmi_exception.AmdSmiLibraryException as e:
             version_info["amdgpu version"] = "N/A"
             logging.debug("Failed to get driver info for gpu: %s", e.get_error_info())
+        try:
+            version_info["amdgpu dkms version"] = amdsmi_interface.amdsmi_get_amdgpu_dkms_version()
+        except amdsmi_exception.AmdSmiLibraryException as e:
+            version_info["amdgpu dkms version"] = "N/A"
+            logging.debug("Failed to get active amdgpu DKMS version | %s", e.get_error_info())
         try:
             fw_info = amdsmi_interface.amdsmi_get_fw_info(processors[0])
             for fw in fw_info["fw_list"]:

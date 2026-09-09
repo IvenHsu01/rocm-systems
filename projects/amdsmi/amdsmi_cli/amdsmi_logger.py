@@ -1267,6 +1267,7 @@ class AMDSMILogger:
         fw_pldm_version = str(output["version_info"]["fw pldm version"])
         vbios_version = str(output["version_info"]["vbios version"])
         kernel_version = str(output["version_info"]["kernel version"])
+        amdgpu_dkms_version = str(output["version_info"]["amdgpu dkms version"])
         _COL_WIDTH = 57  # inner column width for the default output table
 
         def _trunc(s):
@@ -1276,6 +1277,7 @@ class AMDSMILogger:
         amd_smi_version = _trunc(amd_smi_version)
         rocm_version = _trunc(rocm_version)
         amdgpu_version = _trunc(amdgpu_version)
+        amdgpu_dkms_version = _trunc(amdgpu_dkms_version)
         fw_pldm_version = _trunc(fw_pldm_version)
         vbios_version = _trunc(vbios_version)
         kernel_version = _trunc(kernel_version)
@@ -1295,6 +1297,9 @@ class AMDSMILogger:
             print("| amdgpu Version:    {0:<{w}s} |".format(amdgpu_version, w=_COL_WIDTH))
         elif kernel_version.strip() != "N/A":
             print("| OS kernel Version: {0:<{w}s} |".format(kernel_version, w=_COL_WIDTH))
+
+        if amdgpu_dkms_version.strip() != "N/A":
+            print("| amdgpu DKMS:       {0:<{w}s} |".format(amdgpu_dkms_version, w=_COL_WIDTH))
 
         if rocm_version != "N/A":
             print("| ROCm Version:      {0:<{w}s} |".format(rocm_version, w=_COL_WIDTH))

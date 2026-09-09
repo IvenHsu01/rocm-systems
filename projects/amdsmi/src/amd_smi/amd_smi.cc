@@ -4942,6 +4942,31 @@ amdsmi_status_t amdsmi_get_lib_version(amdsmi_version_t* version) {
   return AMDSMI_STATUS_SUCCESS;
 }
 
+amdsmi_status_t amdsmi_get_amdgpu_dkms_version(char* version, size_t len) {
+  AMDSMI_CHECK_INIT();
+
+  if ((version == nullptr) || (len < AMDSMI_MAX_STRING_LENGTH)) {
+    return AMDSMI_STATUS_INVAL;
+  }
+
+  auto uts = utsname{};
+  if (uname(&uts) != 0) {
+    return AMDSMI_STATUS_NOT_SUPPORTED;
+  }
+
+  auto active_version = std::string{};
+  if (smi_amdgpu_get_active_dkms_version(kAmdgpuDkmsRoot, kAmdgpuDkmsSourcePrefix, uts.release,
+                                         uts.machine, &active_version) != AMDSMI_STATUS_SUCCESS) {
+    return AMDSMI_STATUS_NOT_SUPPORTED;
+  }
+  if (active_version.size() >= len) {
+    return AMDSMI_STATUS_NOT_SUPPORTED;
+  }
+
+  std::memcpy(version, active_version.c_str(), active_version.size() + 1);
+  return AMDSMI_STATUS_SUCCESS;
+}
+
 amdsmi_status_t amdsmi_get_gpu_vbios_info(amdsmi_processor_handle processor_handle,
                                           amdsmi_vbios_info_t* info) {
   AMDSMI_CHECK_INIT();
