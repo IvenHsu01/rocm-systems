@@ -42,6 +42,7 @@ target_link_libraries(
         rocjitsu_vm_risc_v
         rocjitsu_config
         rocjitsu_dbt_config
+        rocjitsu_ip_discovery
         util
         flatbuffers
         Threads::Threads
@@ -54,11 +55,7 @@ target_link_libraries(
 if(ROCJITSU_ENABLE_VFIO)
     target_link_libraries(
         rocjitsu_bin
-        PRIVATE
-            rocjitsu_ip_discovery
-            rocjitsu_pci
-            rocjitsu_vmm_vfu
-            libvfio-user::libvfio-user
+        PRIVATE rocjitsu_pci rocjitsu_vmm_vfu libvfio-user::libvfio-user
     )
     target_compile_definitions(rocjitsu_bin PRIVATE RJ_ENABLE_VFIO_USER)
 endif()

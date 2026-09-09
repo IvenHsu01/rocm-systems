@@ -19,12 +19,14 @@
 #include <atomic>
 #include <cerrno>
 #include <csignal>
+#include <cstdint>
 #include <ctime>
 #include <exception>
 #include <format>
 #include <memory>
 #include <stop_token>
 #include <thread>
+#include <unistd.h>
 
 namespace rocjitsu {
 namespace {
@@ -65,6 +67,38 @@ constexpr long kSignalPollNanoseconds = 100'000'000;
 constexpr uint8_t kRequestedInterruptClient = 0x1a;
 constexpr uint8_t kRequestedInterruptSource = 0x00;
 
+/// @brief Own the launcher's readiness descriptor until startup succeeds.
+class ReadinessPipe {
+public:
+  explicit ReadinessPipe(int fd) : fd_(fd) {}
+  ~ReadinessPipe() {
+    if (fd_ >= 0) {
+      close(fd_);
+    }
+  }
+
+  ReadinessPipe(const ReadinessPipe &) = delete;
+  ReadinessPipe &operator=(const ReadinessPipe &) = delete;
+
+  [[nodiscard]] bool signal() {
+    if (fd_ < 0) {
+      return true;
+    }
+
+    constexpr uint8_t ready = 1;
+    ssize_t written = 0;
+    do {
+      written = write(fd_, &ready, sizeof(ready));
+    } while (written < 0 && errno == EINTR);
+    close(fd_);
+    fd_ = -1;
+    return written == static_cast<ssize_t>(sizeof(ready));
+  }
+
+private:
+  int fd_;
+};
+
 } // namespace
 
 ServerSignalAction action_for_signal(int signal) {
@@ -77,7 +111,8 @@ ServerSignalAction action_for_signal(int signal) {
   return ServerSignalAction::KeepServing;
 }
 
-int run_vfio_server(const std::string &config_path, const std::string &socket_path) {
+int run_vfio_server(const std::string &config_path, const std::string &socket_path, int ready_fd) {
+  ReadinessPipe readiness(ready_fd);
   config::LoadedConfig loaded;
   try {
     loaded = config::load_config(config_path, kEmbeddedSchema);
@@ -245,6 +280,16 @@ int run_vfio_server(const std::string &config_path, const std::string &socket_pa
       // Drained on this path too: a request signal queued while the mask was on
       // is still pending, and unmasking with one outstanding kills the process
       // on the way out of a failure it has already reported.
+      drain_and_restore(handled_signals, previous_signals);
+      return 1;
+    }
+
+    // build() has bound and started listening on the AF_UNIX socket. Publish
+    // that state directly instead of making the launcher infer it by polling a
+    // path against a guessed deadline. Closing the pipe without this byte is
+    // the corresponding startup-failure notification.
+    if (!readiness.signal()) {
+      util::Logger::warn("vfu: cannot report server readiness to the launcher");
       drain_and_restore(handled_signals, previous_signals);
       return 1;
     }

@@ -33,6 +33,7 @@ extern "C" {
 #include <pci_caps/px.h>
 }
 
+#include <poll.h>
 #include <sys/eventfd.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
@@ -867,6 +868,54 @@ TEST(VfioServer, ReturnsRatherThanHangingWhenTheSocketCannotBeBound) {
   }
   FAIL() << "the server did not return after failing to bind; the engine thread was never asked "
             "to exit";
+}
+
+TEST(VfioServer, ReportsReadinessAfterTheSocketIsListening) {
+  const std::string config = RJ_VFU_TEST_CONFIG_PATH;
+  ASSERT_TRUE(std::filesystem::exists(config)) << "no config to build a machine from: " << config;
+  const std::string socket_path = std::format("/tmp/rj-vfu-server-ready-{}.sock", ::getpid());
+  std::filesystem::remove(socket_path);
+
+  int ready_pipe[2];
+  ASSERT_EQ(::pipe(ready_pipe), 0) << strerror(errno);
+  const pid_t child = ::fork();
+  ASSERT_GE(child, 0);
+  if (child == 0) {
+    ::close(ready_pipe[0]);
+    const int result = rocjitsu::run_vfio_server(config, socket_path, ready_pipe[1]);
+    ::_exit(result == 0 ? EXIT_SUCCESS : EXIT_FAILURE);
+  }
+
+  ChildProcessGuard child_guard(child);
+  ::close(ready_pipe[1]);
+  pollfd ready_poll{.fd = ready_pipe[0], .events = POLLIN | POLLHUP, .revents = 0};
+  int poll_result = 0;
+  do {
+    poll_result = ::poll(&ready_poll, 1, 60'000);
+  } while (poll_result < 0 && errno == EINTR);
+  ASSERT_EQ(poll_result, 1) << "the server did not report readiness";
+
+  uint8_t ready = 0;
+  ssize_t ready_bytes = 0;
+  do {
+    ready_bytes = ::read(ready_pipe[0], &ready, sizeof(ready));
+  } while (ready_bytes < 0 && errno == EINTR);
+  ::close(ready_pipe[0]);
+  ASSERT_EQ(ready_bytes, static_cast<ssize_t>(sizeof(ready)));
+  EXPECT_EQ(ready, 1);
+  EXPECT_TRUE(std::filesystem::is_socket(std::filesystem::symlink_status(socket_path)));
+
+  ASSERT_EQ(::kill(child, SIGTERM), 0) << strerror(errno);
+  int status = 0;
+  pid_t waited = 0;
+  do {
+    waited = ::waitpid(child, &status, 0);
+  } while (waited < 0 && errno == EINTR);
+  child_guard.release();
+  EXPECT_EQ(waited, child);
+  EXPECT_TRUE(WIFEXITED(status));
+  EXPECT_EQ(WEXITSTATUS(status), EXIT_SUCCESS);
+  std::filesystem::remove(socket_path);
 }
 
 // An empty target is a caller's mistake, and the serving thread is the wrong

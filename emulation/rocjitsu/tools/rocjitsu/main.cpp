@@ -402,6 +402,7 @@ void print_usage() {
          "                    means -object\n"
          "                    memory-backend-memfd,id=mem,size=<N>,share=on together\n"
          "                    with -machine memory-backend=mem.\n"
+         "  --check-vfio-user Report whether this binary includes VFIO-user support\n"
          "  --version, -v     Print version and exit\n"
          "  --help, -h        Print this help and exit\n";
 }
@@ -413,6 +414,7 @@ int main(int argc, char *argv[]) {
 
   const char *config_path = nullptr;
   const char *vfio_socket = nullptr;
+  int vfio_ready_fd = -1;
   bool daemon_mode = false;
   bool attach_mode = false;
   int separator_idx = -1;
@@ -427,10 +429,26 @@ int main(int argc, char *argv[]) {
       config_path = argv[++i];
     } else if (arg == "--vfio-socket" && i + 1 < argc) {
       vfio_socket = argv[++i];
+    } else if (arg == "--vfio-ready-fd" && i + 1 < argc) {
+      std::string_view value(argv[++i]);
+      auto [ptr, error] = std::from_chars(value.data(), value.data() + value.size(), vfio_ready_fd);
+      if (error != std::errc{} || ptr != value.data() + value.size() || vfio_ready_fd < 0) {
+        std::cerr << "rocjitsu: --vfio-ready-fd requires a nonnegative descriptor\n";
+        return 1;
+      }
     } else if (arg == "--daemon") {
       daemon_mode = true;
     } else if (arg == "--attach") {
       attach_mode = true;
+    } else if (arg == "--check-vfio-user") {
+#if defined(RJ_ENABLE_VFIO_USER)
+      std::cout << "vfio-user support enabled\n";
+      return 0;
+#else
+      std::cerr << "rocjitsu: this build has no vfio-user support; reconfigure with "
+                   "-DROCJITSU_ENABLE_VFIO=ON\n";
+      return 1;
+#endif
     } else if (arg == "--help" || arg == "-h") {
       print_usage();
       return 0;
@@ -466,12 +484,17 @@ int main(int argc, char *argv[]) {
       return 1;
     }
 #if defined(RJ_ENABLE_VFIO_USER)
-    return rocjitsu::run_vfio_server(abs_config, vfio_socket);
+    return rocjitsu::run_vfio_server(abs_config, vfio_socket, vfio_ready_fd);
 #else
     std::cerr << "rocjitsu: this build has no vfio-user support; reconfigure with "
                  "-DROCJITSU_ENABLE_VFIO=ON\n";
     return 1;
 #endif
+  }
+
+  if (vfio_ready_fd >= 0) {
+    std::cerr << "rocjitsu: --vfio-ready-fd requires --vfio-socket\n";
+    return 1;
   }
 
   rocjitsu::config::DbtGuestConfig dbt_guest_config;
