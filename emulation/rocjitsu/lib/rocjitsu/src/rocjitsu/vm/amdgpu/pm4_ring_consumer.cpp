@@ -127,7 +127,7 @@ Pm4RingResult Pm4RingConsumer::consume(uint64_t producer_cursor, std::size_t pac
     return result;
   }
   if (!access_) {
-    access_ = gpu_vm_->snapshot(address_space_);
+    access_ = gpu_vm_->snapshot_pinned(address_space_);
     if (!access_) {
       result.status = Pm4RingStatus::Faulted;
       return result;
