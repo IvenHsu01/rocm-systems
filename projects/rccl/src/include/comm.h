@@ -702,6 +702,13 @@ struct ncclComm {
   struct ncclComm* hierarchicalIntraComm;
   struct ncclComm* hierarchicalInterComm;
   bool hierarchicalCommsInitialized;
+  // Topology permits hierarchical collectives, decided at init. The
+  // sub-communicators above are built later, on the first collective that is
+  // actually eligible for the hierarchical path.
+  bool hierarchicalEligible;
+  // Guards against a second collective ncclCommSplit after a failed attempt,
+  // which would hang instead of returning an error.
+  bool hierarchicalInitAttempted;
 
   // Hierarchical temporary buffer
   // Both hierarchical AG and RS use the same temp buffer,

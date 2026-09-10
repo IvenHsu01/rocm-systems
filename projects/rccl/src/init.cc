@@ -724,6 +724,8 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
 
   comm->hierarchicalIntraComm = nullptr;
   comm->hierarchicalInterComm = nullptr;
+  comm->hierarchicalEligible = false;
+  comm->hierarchicalInitAttempted = false;
   comm->hierarchicalCommsInitialized = false;
   comm->hierarchicalTempBuffer = nullptr;
   // Enable PAT for interComm hierarchical collectives
@@ -2862,9 +2864,17 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
     NCCLCHECK(ncclMemAlloc((void**)&comm->gatheredSizes, nGather * sizeof(size_t)));
   }
 
-  // Initialize hierarchical sub-communicators and temp buffers
-  if (!job->parent && !comm->isGrow && comm->nNodes >= 8 && comm->maxLocalRanks > 1 &&
-      (rcclParamHierarchicalAllGather() == 1 || rcclParamHierarchicalReduceScatter() == 1)) {
+  // Record whether this communicator *could* use hierarchical collectives. The
+  // sub-communicators themselves are built on first use by
+  // rcclEnsureHierarchicalComms(), not here: constructing them costs two extra
+  // ncclCommSplit calls, their channels, buffers and proxy resources, and the
+  // temp buffer, which measured at roughly 2.3 GB of device memory per rank at
+  // 22 nodes. A communicator whose AllGathers all fall outside the hierarchical
+  // size window never uses any of it, and paying for it at init was enough to
+  // push a memory-tight workload into an allocation failure mid-collective
+  // (ROCM-29579).
+  comm->hierarchicalEligible = false;
+  if (!job->parent && !comm->isGrow && comm->nNodes >= 8 && comm->maxLocalRanks > 1) {
     if (comm->minLocalRanks != comm->maxLocalRanks) {
       INFO(NCCL_INIT, "Hierarchical collectives: non-uniform GPU count per node, skipping hierarchical setup");
     } else {
@@ -2881,23 +2891,8 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
       if (!compactRanks) {
         INFO(NCCL_INIT, "Hierarchical collectives: non-compact rank ordering, skipping hierarchical algorithms");
       } else {
-        int node_id = comm->rankToNode[comm->rank];
-        int local_rank = comm->rankToLocalRank[comm->rank];
-        NCCLCHECKGOTO(ncclCommSplit(comm, node_id, local_rank, &comm->hierarchicalIntraComm, NULL), res, fail);
-        // honor user input if user explicitly disables PAT
-        const char* patEnableEnv = ncclGetEnv("NCCL_PAT_ENABLE");
-        bool userDisabledPat = (patEnableEnv != nullptr) && (std::atoi(patEnableEnv) == 0);
-        comm->forcePatEnable = !userDisabledPat && !rcclUseAinic();
-        NCCLCHECKGOTO(ncclCommSplit(comm, local_rank, node_id, &comm->hierarchicalInterComm, NULL), res, fail);
-        comm->forcePatEnable = false;
-        // inherit PXN disable from parent comm
-        comm->hierarchicalInterComm->pxnDisable = comm->pxnDisable;
-        size_t tempBufSize = rcclHierarchicalTempBufferSize(comm->nNodes, rcclParamHierarchicalAllGather() == 1,
-                                                            rcclParamHierarchicalReduceScatter() == 1);
-        NCCLCHECKGOTO(ncclCudaMalloc(&(comm->hierarchicalTempBuffer), tempBufSize, comm->memManager), res, fail);
-        comm->hierarchicalCommsInitialized = true;
-        INFO(NCCL_INIT, "Hierarchical collectives: intraComm (nRanks=%d) and interComm (nRanks=%d) Initialized",
-             comm->hierarchicalIntraComm->nRanks, comm->hierarchicalInterComm->nRanks);
+        comm->hierarchicalEligible = true;
+        INFO(NCCL_INIT, "Hierarchical collectives: eligible, deferring sub-communicator setup to first use");
       }
     }
   }
@@ -2967,6 +2962,48 @@ fail:
   } else { \
     INFO(NCCL_ENV, "Comm config " fieldStr " set to " format, config->field); \
   }
+
+// Build the hierarchical sub-communicators and temp buffer, on first use.
+//
+// Called from rcclUseHierarchicalAllGather() / rcclUseHierarchicalReduceScatter()
+// once a collective has been found that is actually eligible for the hierarchical
+// path. Every rank of the communicator reaches that decision with the same
+// message size -- AllGather and ReduceScatter both require matching counts across
+// ranks -- so all ranks enter here together, which is required because
+// ncclCommSplit is collective.
+ncclResult_t rcclEnsureHierarchicalComms(struct ncclComm* comm) {
+  if (comm->hierarchicalCommsInitialized) return ncclSuccess;
+  if (!comm->hierarchicalEligible) return ncclSuccess;
+
+  // One attempt only. If the splits fail we must not retry on the next
+  // collective: the ranks that succeeded would then be out of step with the ones
+  // that did not, and a second collective ncclCommSplit would hang rather than
+  // return an error.
+  if (comm->hierarchicalInitAttempted) return ncclSuccess;
+  comm->hierarchicalInitAttempted = true;
+
+  int node_id = comm->rankToNode[comm->rank];
+  int local_rank = comm->rankToLocalRank[comm->rank];
+
+  NCCLCHECK(ncclCommSplit(comm, node_id, local_rank, &comm->hierarchicalIntraComm, NULL));
+  // honor user input if user explicitly disables PAT
+  const char* patEnableEnv = ncclGetEnv("NCCL_PAT_ENABLE");
+  bool userDisabledPat = (patEnableEnv != nullptr) && (std::atoi(patEnableEnv) == 0);
+  comm->forcePatEnable = !userDisabledPat && !rcclUseAinic();
+  NCCLCHECK(ncclCommSplit(comm, local_rank, node_id, &comm->hierarchicalInterComm, NULL));
+  comm->forcePatEnable = false;
+  // inherit PXN disable from parent comm
+  comm->hierarchicalInterComm->pxnDisable = comm->pxnDisable;
+
+  size_t tempBufSize = rcclHierarchicalTempBufferSize(comm->nNodes, rcclParamHierarchicalAllGather() == 1,
+                                                      rcclParamHierarchicalReduceScatter() == 1);
+  NCCLCHECK(ncclCudaMalloc(&(comm->hierarchicalTempBuffer), tempBufSize, comm->memManager));
+
+  comm->hierarchicalCommsInitialized = true;
+  INFO(NCCL_INIT, "Hierarchical collectives: intraComm (nRanks=%d) and interComm (nRanks=%d) Initialized on first use",
+       comm->hierarchicalIntraComm->nRanks, comm->hierarchicalInterComm->nRanks);
+  return ncclSuccess;
+}
 
 static ncclResult_t envConfigOverride(ncclComm_t comm) {
   ncclResult_t ret = ncclSuccess;

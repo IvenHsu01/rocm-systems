@@ -721,6 +721,14 @@ RCCL_PARAM(HierarchicalAllGather, "HIERARCHICAL_ALLGATHER", 1);
 // ~6 MB gathered, in both directions run to run, while the win the feature
 // exists for sits around 23 MB gathered.
 //
+// Together with lazy construction this bound does more than pick a different
+// algorithm: rcclEnsureHierarchicalComms() below runs only for an AllGather
+// that clears both bounds, so a workload whose only AllGather is bootstrap-sized
+// never builds the sub-communicators at all. That is the part that matters for
+// ROCM-29579 -- the build costs two ncclCommSplit calls and roughly 2.3 GB of
+// device memory per rank at 22 nodes, and a bound on selection alone would still
+// pay all of it.
+//
 // The bound is per-rank rather than on the total gathered size on purpose.
 // msgSize is count * typeSize * nRanks, so a fixed total-byte floor drifts
 // against the bootstrap traffic it exists to exclude: 8 B/rank gathers to 512 B
@@ -731,13 +739,13 @@ RCCL_PARAM(HierarchicalAllGather, "HIERARCHICAL_ALLGATHER", 1);
 // count, and 1 KB/rank remains three orders of magnitude below the region where
 // the hierarchical path is actually faster.
 //
-// Set to 0 to restore the previous upper-bound-only behaviour.
+// Set to 0 to restore the previous behaviour: an upper bound only, and with it
+// the bootstrap-triggered build.
 RCCL_PARAM(HierarchicalAllGatherMinBytesPerRank, "HIERARCHICAL_ALLGATHER_MIN_BYTES_PER_RANK", 1024);
 
-bool rcclUseHierarchicalAllGather(struct ncclComm* comm, size_t msgSize) {
+bool rcclUseHierarchicalAllGather(struct ncclComm* comm, size_t msgSize, bool allowInit) {
   if (comm->nNodes < 8) return false;
   if (rcclParamHierarchicalAllGather() != 1) return false;
-  if (!comm->hierarchicalCommsInitialized) return false;
 
   // msgSize is the total gathered size; recover this rank's own contribution to
   // compare against the floor.
@@ -748,7 +756,14 @@ bool rcclUseHierarchicalAllGather(struct ncclComm* comm, size_t msgSize) {
   }
 
   size_t threshold = rcclHierarchicalTempBufferSize(comm->nNodes, /*allGather=*/true, /*reduceScatter=*/false);
-  return threshold > 0 && msgSize <= threshold;
+  if (threshold == 0 || msgSize > threshold) return false;
+
+  // Build the sub-communicators on first real use rather than at init. Every
+  // rank reaches this point with the same msgSize, because AllGather requires a
+  // matching sendcount across ranks, so the decision to initialize is uniform.
+  // Only the dispatch path may do this; see the header note on allowInit.
+  if (allowInit && rcclEnsureHierarchicalComms(comm) != ncclSuccess) return false;
+  return comm->hierarchicalCommsInitialized;
 }
 
 bool rcclUseAllGatherDirect(struct ncclComm* comm, size_t& msgSize) {
@@ -1140,7 +1155,7 @@ ncclResult_t rcclSelectAllGather(struct ncclComm* comm, const void* sendbuff, vo
   // (2) Hierarchical AllGather. Live dispatch requires being outside a group
   // (rcclSelectAllGatherAlgo); the reporting query always runs outside a group, so
   // the same gate reproduces rcclGetAlgoInfo's group-agnostic reporting.
-  if (ncclGroupDepth == 0 && rcclUseHierarchicalAllGather(comm, msgSize)) {
+  if (ncclGroupDepth == 0 && rcclUseHierarchicalAllGather(comm, msgSize, /*allowInit=*/true)) {
     decision->algo = RCCL_HIERARCHICAL_ALLGATHER;
     if (query) {
       // -A reports the inter-comm proto/channels; intra values are logged only.
@@ -1312,7 +1327,8 @@ ncclResult_t rcclSelectReduceScatter(struct ncclComm* comm, const void* sendbuff
   // (3) Hierarchical ReduceScatter (multi-node, sum only). Live dispatch requires
   // being outside a group; the reporting query always runs outside a group, so the
   // same gate reproduces rcclGetAlgoInfo's group-agnostic reporting.
-  if (!symEligible && ncclGroupDepth == 0 && op == ncclSum && rcclUseHierarchicalReduceScatter(comm, totalBytes)) {
+  if (!symEligible && ncclGroupDepth == 0 && op == ncclSum &&
+      rcclUseHierarchicalReduceScatter(comm, totalBytes, /*allowInit=*/true)) {
     decision->algo = RCCL_HIERARCHICAL_REDUCESCATTER;
     if (query) {
       int a, p, ch;
@@ -1419,13 +1435,18 @@ bool rcclUseReduceScatterDirect(struct ncclComm* comm, size_t& msgSize) {
 
 RCCL_PARAM(HierarchicalReduceScatter, "HIERARCHICAL_REDUCE_SCATTER", 0);
 
-bool rcclUseHierarchicalReduceScatter(struct ncclComm* comm, size_t msgSize) {
-  if (comm->nNodes < 8 || rcclParamHierarchicalReduceScatter() != 1 || !comm->hierarchicalCommsInitialized) {
+bool rcclUseHierarchicalReduceScatter(struct ncclComm* comm, size_t msgSize, bool allowInit) {
+  if (comm->nNodes < 8 || rcclParamHierarchicalReduceScatter() != 1) {
     return false;
   }
 
   size_t threshold = rcclHierarchicalTempBufferSize(comm->nNodes, /*allGather=*/false, /*reduceScatter=*/true);
-  return threshold > 0 && msgSize <= threshold;
+  if (threshold == 0 || msgSize > threshold) return false;
+
+  // Same lazy construction as the AllGather path; ReduceScatter likewise requires
+  // a matching recvcount across ranks, so every rank decides identically.
+  if (allowInit && rcclEnsureHierarchicalComms(comm) != ncclSuccess) return false;
+  return comm->hierarchicalCommsInitialized;
 }
 
 void rcclSetPxn(struct ncclComm* comm, int& rcclPxnDisable) {

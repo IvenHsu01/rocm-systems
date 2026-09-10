@@ -186,10 +186,17 @@ NCCL_API(ncclResult_t, rcclSymKGetInfo, struct ncclComm* comm, ncclFunc_t coll, 
 NCCL_API(ncclResult_t, rcclGetAlgoName, int algo, const char** algoName);
 NCCL_API(ncclResult_t, rcclGetProtocolName, int protocol, const char** algoName);
 bool rcclUseAllGatherDirect(struct ncclComm* comm, size_t& msgSize);
-bool rcclUseHierarchicalAllGather(struct ncclComm* comm, size_t msgSize);
+// allowInit must be true only on the live dispatch path. Building the
+// sub-communicators is collective, and rcclGetAlgoInfo() reporting may be called by
+// a single rank, which would hang if it tried to build them.
+bool rcclUseHierarchicalAllGather(struct ncclComm* comm, size_t msgSize, bool allowInit = false);
 bool rcclUseReduceScatterDirect(struct ncclComm* comm, size_t& msgSize);
-bool rcclUseHierarchicalReduceScatter(struct ncclComm* comm, size_t msgSize);
+bool rcclUseHierarchicalReduceScatter(struct ncclComm* comm, size_t msgSize, bool allowInit = false);
 size_t rcclHierarchicalTempBufferSize(int nNodes, bool allGather, bool reduceScatter);
+// Builds the hierarchical sub-communicators and temp buffer on first use. Collective:
+// all ranks of comm must call it, which the callers guarantee by keying the decision
+// on a message size that is identical across ranks.
+ncclResult_t rcclEnsureHierarchicalComms(struct ncclComm* comm);
 // Fills in algo/protocol/channels for a hierarchical AllGather or ReduceScatter.
 ncclResult_t rcclHierarchicalAlgoInfo(struct ncclComm* comm, ncclFunc_t coll, uint64_t count, ncclDataType_t dataType,
                                       int* algo, int* protocol, int* maxChannels);
