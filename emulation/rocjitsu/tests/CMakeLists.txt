@@ -1847,7 +1847,11 @@ if(HSA_RUNTIME64)
     if(RJ_INSTALL_TESTS)
         rj_install_test_target(hsa_init_test)
     endif()
-    foreach(_hsa_test IN ITEMS InitSucceeded GpuAgentFound)
+    foreach(
+        _hsa_test
+        IN
+        ITEMS InitSucceeded GpuAgentFound SdmaPublishesCompletePackets
+    )
         rj_add_test(
             NAME "HsaTest.${_hsa_test}"
             COMMAND
