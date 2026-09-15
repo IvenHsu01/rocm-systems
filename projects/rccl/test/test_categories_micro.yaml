@@ -13,6 +13,7 @@ test_categories:
     description: "Smoke — host-only micro-tests, sub-second."
     test_patterns:
       - "P2pMicrotest.*"
+      - "P2pMicrotestIsolated.*"
       - "FreshRegistrationMicrotest.*"
       - "FreshRegistrationLegacyIpcSucceedsFixture.*"
       - "RmaProxyProgressTest.*"
