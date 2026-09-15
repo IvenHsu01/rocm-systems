@@ -4,7 +4,7 @@ set(RCCL_MICRO_TEST_SOURCES
   p2p-test.cc
   rma-proxy-progress-test.cc          # RMA proxy inflight-request coverage
   ras-client-test.cc                   # src/ras/client.cc: libc-only seams, no HIP/nccl deps
-  ras-test.cc                          # src/ras/ras.cc: message and poll-state helpers
+  ras-test.cc                          # src/ras/ras.cc: complete host-side line coverage
   group-test.cc
   devcomm-test.cc
   fakes/nccl_fakes.cc                  # reusable stubs for nccl* symbols
@@ -99,9 +99,8 @@ if(BUILD_TESTS)
   # symbols (__llvm_profile_raw_version, __start___llvm_prf_cnts, ...) that do
   # not exist on device, making amdgcn-link fail. --offload-host-only removes the
   # device pass entirely, which is robust across clang toolchains that ignore the
-  # older -Xarch_device coverage split. ras.cc also has deep thread/network
-  # paths outside this first focused batch; function sections let the linker
-  # discard those paths and their otherwise-unneeded dependencies.
+  # older -Xarch_device coverage split. Function sections also let the linker
+  # discard dependency code that none of the host-only tests call.
   target_compile_options(rccl-UnitTestsMicro PRIVATE --offload-host-only -ffunction-sections)
   target_link_options(rccl-UnitTestsMicro PRIVATE -no-hip-rt -Wl,--gc-sections)
 
@@ -818,8 +817,8 @@ target_compile_definitions(rccl-UnitTestsMicro PRIVATE
 # -no-pie for the same reason as rccl-HostUnitTests: the RCCL-vendored
 # libgtest.a used by this standalone path is built without -fPIC, so a PIE
 # link fails with "relocation R_X86_64_32 cannot be used against local symbol".
-# Function-section GC keeps ras.cc's out-of-scope thread/network paths out of
-# this intentionally small first batch.
+# Function-section GC discards dependency code that the host-only tests do not
+# call. The ras.cc tests themselves cover every executable source line.
 target_link_options(rccl-UnitTestsMicro PRIVATE -no-hip-rt -no-pie -Wl,--gc-sections)
 target_link_libraries(rccl-UnitTestsMicro PRIVATE
   GTest::GTest
