@@ -5,7 +5,7 @@
 
 // Updating after finalize is caller error. rocprofiler-sdk reports it through
 // its own logging, which ROCPROFILER_CI promotes to fatal; that check is why
-// the call exists. Other consumers, projects/cuid among them, must not take on
+// the call exists. Other consumers, shared/cuid among them, must not take on
 // abseil and fmt to compute a digest, so there it degrades to a stderr line.
 #if defined(ROCM_SHA256_ROCPROFILER_LOGGING)
 #include "lib/common/logging.hpp"
