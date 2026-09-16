@@ -1060,6 +1060,131 @@ struct Wave32PluginFixture {
   }
 };
 
+TEST(ExecutionPluginTest, VopdIntegerPairsPreserveMasksAliasesAndObservation) {
+  constexpr uint32_t kMov = 8;
+  constexpr uint32_t kAdd = 16;
+  constexpr uint32_t kShift = 17;
+  constexpr uint32_t kDstX = 2;
+  constexpr uint32_t kDstY = 3;
+  constexpr uint32_t kSrcX1 = 4;
+  constexpr uint32_t kSrcY1 = 5;
+  constexpr uint32_t kInlineZero = 128;
+  constexpr uint32_t kInlineThirtyTwo = 160;
+  constexpr uint32_t kVgprSrcBase = 256;
+  const auto evaluate = [](uint32_t op, uint32_t src0, uint32_t src1) {
+    if (op == kMov)
+      return src0;
+    if (op == kAdd)
+      return src0 + src1;
+    return src1 << (src0 & 31u);
+  };
+  for (rj_code_arch_t arch : {ROCJITSU_CODE_ARCH_RDNA3, ROCJITSU_CODE_ARCH_RDNA3_5,
+                              ROCJITSU_CODE_ARCH_RDNA4, ROCJITSU_CODE_ARCH_CDNA5}) {
+    SCOPED_TRACE(static_cast<int>(arch));
+    for (bool force_scalar : {false, true}) {
+      SCOPED_TRACE(force_scalar);
+      ForceScalarOverride execution_mode(force_scalar);
+      Wave32PluginFixture f(arch);
+      auto *plugin = f.attach_ordering_plugin();
+      auto *wf = f.cu->dispatch_wf(0, 0, /*sgprs=*/104, /*vgprs=*/32);
+      ASSERT_NE(wf, nullptr);
+      ASSERT_EQ(wf->wf_size(), 32u);
+      const uint32_t base = wf->vgpr_alloc().base;
+      auto decoder = Decoder::create(arch);
+      ASSERT_NE(decoder, nullptr);
+      for (bool vopd3 : {false, true}) {
+        if (vopd3 && arch != ROCJITSU_CODE_ARCH_CDNA5)
+          continue;
+        SCOPED_TRACE(vopd3);
+        for (uint32_t x_op : {kMov, kAdd, kShift}) {
+          // Classic VOPD has no encoding for ADD/LSHL in the X slot.
+          if (!vopd3 && x_op != kMov)
+            continue;
+          for (uint32_t y_op : {kMov, kAdd, kShift}) {
+            SCOPED_TRACE(x_op);
+            SCOPED_TRACE(y_op);
+            for (bool inline_sources : {false, true}) {
+              SCOPED_TRACE(inline_sources);
+              const uint32_t x_src0 = inline_sources ? kInlineZero : kVgprSrcBase + kDstY;
+              const uint32_t y_src0 = inline_sources ? kInlineThirtyTwo : kVgprSrcBase + kDstX;
+              const std::array<uint32_t, 3> words =
+                  vopd3
+                      ? std::array<uint32_t, 3>{0xCF000000u | (x_op << 18) | (y_op << 12) | x_src0,
+                                                y_src0 | (kSrcX1 << 16),
+                                                kDstX | (kSrcY1 << 8) | (kDstY << 24)}
+                      : std::array<uint32_t, 3>{
+                            (0x32u << 26) | (x_op << 22) | (y_op << 17) | (kSrcX1 << 9) | x_src0,
+                            y_src0 | (kSrcY1 << 9) | ((kDstY >> 1) << 17) | (kDstX << 24), 0};
+              std::unique_ptr<Instruction> inst(decode_valid(*decoder, words.data()));
+              ASSERT_NE(inst, nullptr);
+              for (uint64_t exec : {0u, 0xA5010081u, 0xFFFFFFFFu}) {
+                SCOPED_TRACE(exec);
+                wf->set_exec(exec);
+                for (uint32_t lane = 0; lane < 32; ++lane) {
+                  f.cu->write_vgpr(base + kDstX, lane, 0xFFFFFF00u + lane);
+                  f.cu->write_vgpr(base + kDstY, lane, 40u + lane);
+                  f.cu->write_vgpr(base + kSrcX1, lane, 0x01010101u * (lane + 1));
+                  f.cu->write_vgpr(base + kSrcY1, lane, 0x80000000u + lane);
+                }
+                plugin->events.clear();
+                ASSERT_TRUE(f.cu->execute_instruction(inst.get(), *wf).succeeded());
+                for (uint32_t lane = 0; lane < 32; ++lane) {
+                  const uint32_t old_x = 0xFFFFFF00u + lane;
+                  const uint32_t old_y = 40u + lane;
+                  const uint32_t expected_x =
+                      (exec & (uint64_t{1} << lane))
+                          ? evaluate(x_op, inline_sources ? 0u : old_y, 0x01010101u * (lane + 1))
+                          : old_x;
+                  const uint32_t expected_y =
+                      (exec & (uint64_t{1} << lane))
+                          ? evaluate(y_op, inline_sources ? 32u : old_x, 0x80000000u + lane)
+                          : old_y;
+                  EXPECT_EQ(f.cu->read_vgpr_storage(base + kDstX, lane), expected_x) << lane;
+                  EXPECT_EQ(f.cu->read_vgpr_storage(base + kDstY, lane), expected_y) << lane;
+                }
+                std::map<uint32_t, uint64_t> reads;
+                std::map<uint32_t, uint64_t> writes;
+                for (const auto &event : vgpr_read_events(*plugin)) {
+                  EXPECT_EQ(event.byte_mask, ExecutionPlugin::kFullByteMask);
+                  if (util::has_stdx_simd && !force_scalar)
+                    EXPECT_EQ(event.lane_mask, exec);
+                  reads[event.physical_reg - base] |= event.lane_mask;
+                }
+                for (const auto &event : vgpr_write_events(*plugin)) {
+                  EXPECT_EQ(event.byte_mask, ExecutionPlugin::kFullByteMask);
+                  if (util::has_stdx_simd && !force_scalar)
+                    EXPECT_EQ(event.lane_mask, exec);
+                  writes[event.physical_reg - base] |= event.lane_mask;
+                }
+                std::map<uint32_t, uint64_t> expected_reads;
+                std::map<uint32_t, uint64_t> expected_writes;
+                if (exec != 0) {
+                  if (!inline_sources) {
+                    expected_reads[kDstX] = exec;
+                    expected_reads[kDstY] = exec;
+                  }
+                  if (x_op != kMov)
+                    expected_reads[kSrcX1] = exec;
+                  if (y_op != kMov)
+                    expected_reads[kSrcY1] = exec;
+                  expected_writes = {{kDstX, exec}, {kDstY, exec}};
+                }
+                if (util::has_stdx_simd && !force_scalar) {
+                  // SIMD views report once per operand, not once per active lane.
+                  EXPECT_EQ(vgpr_read_events(*plugin).size(), expected_reads.size());
+                  EXPECT_EQ(vgpr_write_events(*plugin).size(), expected_writes.size());
+                }
+                EXPECT_EQ(reads, expected_reads);
+                EXPECT_EQ(writes, expected_writes);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 TEST(ExecutionPluginTest, Vop3CompareObservesOnlyArchitecturalDestinationReads) {
   Wave32PluginFixture f;
   ASSERT_NE(f.cu, nullptr);

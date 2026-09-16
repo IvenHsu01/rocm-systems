@@ -81,7 +81,8 @@ private:
                   bool request_l1_bypass, uint32_t vmid, RequestMtypeResolver &mtypes);
   void write_bytes(uint64_t addr, const uint8_t *src, uint32_t size, bool non_temporal,
                    uint32_t vmid, RequestMtypeResolver &mtypes);
-  void ensure_line(uint64_t addr, uint32_t vmid);
+  // If non-null, full_line_data supplies LINE_SIZE bytes and addr must be line-aligned.
+  void ensure_line(uint64_t addr, uint32_t vmid, const uint8_t *full_line_data = nullptr);
 
   CacheStore cache_;
   L2Cache *l2_;

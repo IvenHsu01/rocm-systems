@@ -78,7 +78,7 @@ void L1VectorCache::set_memory(GpuMemory *mem) {
   memory_ = mem;
 }
 
-void L1VectorCache::ensure_line(uint64_t addr, uint32_t vmid) {
+void L1VectorCache::ensure_line(uint64_t addr, uint32_t vmid, const uint8_t *full_line_data) {
   if (cache_.lookup(addr, nullptr, vmid))
     return;
 
@@ -88,6 +88,13 @@ void L1VectorCache::ensure_line(uint64_t addr, uint32_t vmid) {
   cache_.allocate(addr, vmid, &evicted, evicted_data);
 
   assert(!evicted.dirty && "L1 V$ is write-through; lines should never be dirty");
+
+  // A full-line store supplies every byte; fetching the old contents is unnecessary.
+  if (full_line_data) {
+    assert(CacheStore::line_offset(addr) == 0 && "full-line fill requires a line-aligned address");
+    cache_.fill_line(addr, full_line_data, vmid);
+    return;
+  }
 
   uint8_t line_buf[LINE_SIZE];
   l2_->fetch_line(line_addr, line_buf, vmid);
@@ -177,7 +184,7 @@ void L1VectorCache::write_bytes(uint64_t addr, const uint8_t *src, uint32_t size
       continue;
     }
 
-    ensure_line(ea, vmid);
+    ensure_line(ea, vmid, chunk == LINE_SIZE ? src + copied : nullptr);
     cache_.write_line(ea, src + copied, line_offset, chunk, vmid);
 
     // Write through to L2 for all cacheable stores. This ensures partial writes

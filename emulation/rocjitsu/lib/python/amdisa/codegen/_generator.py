@@ -2576,6 +2576,8 @@ class CodeGenerator:
             uint32_t Vopd::execute_slot(const Slot &slot, amdgpu::Wavefront &wf,
                                         uint32_t lane) {
               uint32_t src0 = amdgpu::RegisterAccess(wf).read_lane(*slot.src0, lane);
+              if (slot.op == kVopdMovB32)
+                return src0;
               uint32_t src1 = amdgpu::RegisterAccess(wf).read_lane(*slot.src1, lane);
               uint32_t src2 = slot.has_src2_operand ? amdgpu::RegisterAccess(wf).read_lane(*slot.src2, lane)
                                                      : slot.src2_imm;
@@ -2601,6 +2603,9 @@ class CodeGenerator:
             void Vopd::execute_impl(amdgpu::Wavefront &wf) {
               if (wf.wf_size() != 32)
                 throw util::UnimplementedInst("VOPD requires Wave32");
+              if (amdgpu::try_execute_vopd_integer_pair_simd<
+                      kVopdMovB32, kVopdAddNcU32, kVopdLshlrevB32>(wf, x_, y_))
+                return;
             @EXECUTE_IMPL_BODY@
             }
             ''').replace('@EXECUTE_IMPL_BODY@', execute_impl_body)

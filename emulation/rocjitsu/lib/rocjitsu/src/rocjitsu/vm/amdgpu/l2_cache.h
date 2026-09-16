@@ -285,7 +285,8 @@ private:
   std::shared_lock<std::shared_mutex> acquire_cache_access();
   std::unique_lock<std::shared_mutex> acquire_cache_maintenance();
   void synchronize_epoch_locked();
-  void ensure_line(uint64_t addr, uint32_t vmid = 0);
+  // If non-null, full_line_data supplies LINE_SIZE bytes and addr must be line-aligned.
+  void ensure_line(uint64_t addr, uint32_t vmid = 0, const uint8_t *full_line_data = nullptr);
   void flush_line_locked(uint64_t addr, uint32_t vmid = 0);
   void flush_dirty_locked();
   using DirtyMask = std::array<uint64_t, LINE_SIZE / 64>;
