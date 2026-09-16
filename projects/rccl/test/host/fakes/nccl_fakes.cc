@@ -206,14 +206,12 @@ ncclResult_t ncclShmIpcClose(ncclShmIpcDesc_t* /*desc*/)
 // Topology / graph helpers
 // ---------------------------------------------------------------------------
 
-ncclResult_t ncclTopoCheckP2p(struct ncclComm*       /*comm*/,
-                              struct ncclTopoSystem* /*system*/,
-                              int                    /*rank1*/,
-                              int                    /*rank2*/,
-                              int*                   p2p,
-                              int*                   read,
-                              int*                   intermediateRank,
-                              int*                   cudaP2p)
+// --- Controllable seam: ncclTopoCheckP2p ----------------------------------
+// Default preserves the old stub: report no p2p, no read, no intermediate
+// hop, no cuda-p2p, and success. Tests exercising p2pCanConnect's topology
+// branches install a hook to report p2p-capable / an intermediate rank / etc.
+ncclResult_t DefaultTopoCheckP2p(int /*rank1*/, int /*rank2*/, int* p2p,
+                                 int* read, int* intermediateRank, int* cudaP2p)
 {
     if (p2p)              *p2p              = 0;
     if (read)             *read             = 0;
@@ -221,14 +219,37 @@ ncclResult_t ncclTopoCheckP2p(struct ncclComm*       /*comm*/,
     if (cudaP2p)          *cudaP2p          = 0;
     return ncclSuccess;
 }
+std::function<ncclResult_t(int, int, int*, int*, int*, int*)>
+    g_ncclTopoCheckP2p = DefaultTopoCheckP2p;
 
-ncclResult_t ncclTopoCheckNet(struct ncclTopoSystem* /*system*/,
-                              int                    /*rank1*/,
-                              int                    /*rank2*/,
-                              int*                   net)
+ncclResult_t ncclTopoCheckP2p(struct ncclComm*       /*comm*/,
+                              struct ncclTopoSystem* /*system*/,
+                              int                    rank1,
+                              int                    rank2,
+                              int*                   p2p,
+                              int*                   read,
+                              int*                   intermediateRank,
+                              int*                   cudaP2p)
+{
+    return g_ncclTopoCheckP2p(rank1, rank2, p2p, read, intermediateRank, cudaP2p);
+}
+
+// --- Controllable seam: ncclTopoCheckNet ----------------------------------
+// Default preserves the old stub: report NET is not better (net = 0).
+ncclResult_t DefaultTopoCheckNet(int /*rank1*/, int /*rank2*/, int* net)
 {
     if (net) *net = 0;
     return ncclSuccess;
+}
+std::function<ncclResult_t(int, int, int*)>
+    g_ncclTopoCheckNet = DefaultTopoCheckNet;
+
+ncclResult_t ncclTopoCheckNet(struct ncclTopoSystem* /*system*/,
+                              int                    rank1,
+                              int                    rank2,
+                              int*                   net)
+{
+    return g_ncclTopoCheckNet(rank1, rank2, net);
 }
 
 ncclResult_t ncclCommGraphRegister(struct ncclComm* /*comm*/,
@@ -395,4 +416,6 @@ void ResetNcclFakes()
     g_proxyClientQueryFdBlocking   = DefaultProxyClientQueryFdBlocking;
     g_ncclTopoGetLinkType          = DefaultTopoGetLinkType;
     g_ncclTopoGetLinkTypeCalls     = 0;
+    g_ncclTopoCheckP2p             = DefaultTopoCheckP2p;
+    g_ncclTopoCheckNet             = DefaultTopoCheckNet;
 }
