@@ -186,9 +186,11 @@ protected:
 TEST_F(GdrFlushTest, CuMemDmaBuf_GpuRecvFlush_NoAsyncFatal) {
     ASSERT_TRUE(validateTestPrerequisites(kExactTwoProcesses, kExactTwoProcesses,
                                           false, kMinGpusPerNode, kNoNodeLimit));
-    if (!cuMemEnabledEnv()) GTEST_SKIP() << "Requires NCCL_CUMEM_ENABLE=1 (dma-buf scratchpad path)";
+    if (SkipAgreedAcrossRanks(!cuMemEnabledEnv()))
+        GTEST_SKIP() << "Requires NCCL_CUMEM_ENABLE=1 (dma-buf scratchpad path)";
     AssertInitAndGetDevices(nullptr);
-    if (!gdrPtrSupport()) GTEST_SKIP() << "no GDR backend (neither peermem nor dma-buf) on this device";
+    if (SkipAgreedAcrossRanks(!gdrPtrSupport()))
+        GTEST_SKIP() << "no GDR backend (neither peermem nor dma-buf) on at least one node";
 
     ncclResult_t flush = ncclSuccess;
     ASSERT_RECV_FLUSH_BURST(/*iterations=*/4, /*verifyData=*/true, &flush);
@@ -201,10 +203,12 @@ TEST_F(GdrFlushTest, CuMemDmaBuf_GpuRecvFlush_NoAsyncFatal) {
 TEST_F(GdrFlushTest, Peermem_GpuRecvFlush_NoAsyncFatal) {
     ASSERT_TRUE(validateTestPrerequisites(kExactTwoProcesses, kExactTwoProcesses,
                                           false, kMinGpusPerNode, kNoNodeLimit));
-    if (cuMemEnabledEnv()) GTEST_SKIP() << "Requires NCCL_CUMEM_ENABLE=0 (peermem scratchpad path)";
+    if (SkipAgreedAcrossRanks(cuMemEnabledEnv()))
+        GTEST_SKIP() << "Requires NCCL_CUMEM_ENABLE=0 (peermem scratchpad path)";
     AssertInitAndGetDevices(nullptr);
-    if (!(gdrPtrSupport() & NCCL_PTR_CUDA))
-        GTEST_SKIP() << "peermem (NCCL_PTR_CUDA) not available for the reg_mr scratchpad";
+    if (SkipAgreedAcrossRanks(!(gdrPtrSupport() & NCCL_PTR_CUDA)))
+        GTEST_SKIP() << "peermem (NCCL_PTR_CUDA) not available for the reg_mr scratchpad on at "
+                        "least one node";
 
     ncclResult_t flush = ncclSuccess;
     ASSERT_RECV_FLUSH_BURST(/*iterations=*/4, /*verifyData=*/true, &flush);
@@ -217,10 +221,11 @@ TEST_F(GdrFlushTest, Peermem_GpuRecvFlush_NoAsyncFatal) {
 TEST_F(GdrFlushTest, FeatureDisabled_FallbackReadRecvBuffer) {
     ASSERT_TRUE(validateTestPrerequisites(kExactTwoProcesses, kExactTwoProcesses,
                                           false, kMinGpusPerNode, kNoNodeLimit));
-    if (scratchpadFlushEnabled())
+    if (SkipAgreedAcrossRanks(scratchpadFlushEnabled()))
         GTEST_SKIP() << "Requires RCCL_GDR_FLUSH_GPU_MEM_NO_RELAXED_ORDERING=0 (fallback path)";
     AssertInitAndGetDevices(nullptr);
-    if (!gdrPtrSupport()) GTEST_SKIP() << "no GDR backend (neither peermem nor dma-buf) on this device";
+    if (SkipAgreedAcrossRanks(!gdrPtrSupport()))
+        GTEST_SKIP() << "no GDR backend (neither peermem nor dma-buf) on at least one node";
 
     ncclResult_t flush = ncclSuccess;
     ASSERT_RECV_FLUSH_BURST(/*iterations=*/4, /*verifyData=*/true, &flush);
@@ -234,7 +239,8 @@ TEST_F(GdrFlushTest, RepeatedFlush_NoFaultBurst) {
     ASSERT_TRUE(validateTestPrerequisites(kExactTwoProcesses, kExactTwoProcesses,
                                           false, kMinGpusPerNode, kNoNodeLimit));
     AssertInitAndGetDevices(nullptr);
-    if (!gdrPtrSupport()) GTEST_SKIP() << "no GDR backend (neither peermem nor dma-buf) on this device";
+    if (SkipAgreedAcrossRanks(!gdrPtrSupport()))
+        GTEST_SKIP() << "no GDR backend (neither peermem nor dma-buf) on at least one node";
 
     ncclResult_t flush = ncclSuccess;
     ASSERT_RECV_FLUSH_BURST(/*iterations=*/50, /*verifyData=*/false, &flush);

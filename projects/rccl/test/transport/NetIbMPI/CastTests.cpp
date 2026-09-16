@@ -1633,6 +1633,21 @@ TEST_F(NetIbMPITest, CastSetupUnilateralConnectFailureReported) {
                                          false, kMinGpusPerNode, kNoNodeLimit))
         << "Test requires exactly " << kExactTwoProcesses << " processes";
 
+    // The out-of-range device this test relies on is not out of range under
+    // subnet-aware routing: IbCastConnectImpl runs IbCastFindDevBySubnet before its
+    // bounds check (connect.cc), and that can replace the index with a real NIC whose
+    // subnet matches, after which the connect succeeds and the failure this test needs
+    // never happens. The parameter defaults to off, but it is supported, so the case is
+    // skipped rather than left to fail. Agreed across ranks: a one-sided skip would
+    // leave the peer in the setup handshake below.
+    const char* subnetAware = getenv("NCCL_IB_SUBNET_AWARE_ROUTING");
+    int skip = (subnetAware && atoi(subnetAware) != 0) ? 1 : 0;
+    MPI_Allreduce(MPI_IN_PLACE, &skip, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    if (skip) {
+        GTEST_SKIP() << "NCCL_IB_SUBNET_AWARE_ROUTING remaps an out-of-range device onto a "
+                        "subnet-matched one, so the connect-side failure cannot be forced";
+    }
+
     net_ = &netIbCast;
     // Init and device discovery happen before any MPI exchange in this test, so a
     // unilateral fatal assert here -- one rank failing init while the other does not --
