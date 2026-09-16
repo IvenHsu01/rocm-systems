@@ -2178,7 +2178,12 @@ protected:
                         result = WorkerSendRecvPattern(rank, pair, buffer, size, tag, mhandle,
                                                        workerPattern, timeout, &outstanding);
                         if (!result.ok) {
-                            return outstanding ? WorkerRetainHostBuffer(result, h) : result;
+                            // Whichever holder owns this step's registration is the one to
+                            // retain -- the same choice buffer/mhandle make above. Splitting
+                            // the old single `h` into these two left this site naming a
+                            // variable that no longer exists.
+                            WorkerHostBuffer& held = perSize ? step : whole;
+                            return outstanding ? WorkerRetainHostBuffer(result, held) : result;
                         }
                         tag++;
                     }
