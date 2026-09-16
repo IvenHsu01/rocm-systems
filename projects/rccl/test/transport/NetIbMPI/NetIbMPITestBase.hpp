@@ -441,11 +441,16 @@ protected:
         MPI_Allreduce(MPI_IN_PLACE, &ok, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
         if (local == ncclSuccess && ok) return ncclSuccess;
 
-        // Now that the failure is recoverable rather than fatal, whatever this
-        // rank did create has to be closed here: every caller asserts on this
-        // result before it constructs its NetConnectionGuard, so nothing else
-        // will. A leaked listener or QP would outlive the test and contaminate
-        // the rest of the process. Data comms first, then the listener.
+        // Now that the failure is recoverable rather than fatal, whatever this rank did
+        // create has to be closed here, because nothing else will.
+        //
+        // Not because the callers construct their NetConnectionGuard after checking this
+        // result -- SetupConnectionWithGuard's callers construct it first, and hand it in.
+        // What holds is that the guard is only ever *populated* on success: that helper
+        // asserts on this return value and gives the guard its comms only afterwards, so
+        // on every failure path the guard owns nothing and has nothing to close. A leaked
+        // listener or QP would outlive the test and contaminate the rest of the process.
+        // Data comms first, then the listener.
         if (pair.sendComm) { CloseSendComm(pair.sendComm); pair.sendComm = nullptr; }
         if (pair.recvComm) { CloseRecvComm(pair.recvComm); pair.recvComm = nullptr; }
         if (pair.listenComm) { CloseListenComm(pair.listenComm); pair.listenComm = nullptr; }
