@@ -18,6 +18,7 @@
 #include "HostBufferHelpers.hpp"
 #include "nccl.h"
 #include "net.h"
+#include "net_ib_limits.h"
 #include "plugin/nccl_net.h"
 #include <atomic>
 #include <chrono>
@@ -2220,7 +2221,15 @@ protected:
 
     // The API rejects an index past the connection's QP count, which is how the walks
     // below learn where to stop; the bound is there for a plugin that does not.
-    static constexpr int kQpProbeLimit = 64;
+    //
+    // It has to be the transport's own maximum, not a smaller number picked here. A
+    // connection's count is qpsPerConnection * ndevs (IbCastCalculateNqps), so a fused
+    // two-device NIC at NCCL_IB_QPS_PER_CONNECTION=64 reaches the full 128 -- and a
+    // hand-rolled 64 then made the sender-side walk stop at QP 63 and still report
+    // success, releasing memory queue pairs 64..127 could still be writing into, while
+    // the receive-side walk never reached the out-of-range sentinel and reported a
+    // range it had actually covered as cut short.
+    static constexpr int kQpProbeLimit = NCCL_IB_MAX_QPS;
 
     // Tells the siblings that this worker is not coming. Constructed before anything
     // that can fail -- the allocation and the registration included, which is what the

@@ -4046,6 +4046,19 @@ TEST_F(NetIbMPITest, FaultIsolationAcrossWorkers) {
     AssertInitAndGetDevices(nullptr);
 
     static constexpr int kHealthyTransfers = 10;
+    // How long the victim may legitimately hold the fault, and therefore how long a
+    // bystander may legitimately have to wait for it to finish. Shared by both so the
+    // two cannot drift apart: sized from what the bystanders' transfers can take
+    // (WorkerSendRecvRaw can spend kLargeTransferTimeoutMs in the FIFO slot wait and
+    // again in the completion wait, for each message), clamped well under the 600 s
+    // budget every suite running this test carries so the runner cannot kill the
+    // process group before a real failure prints.
+    static constexpr int kHoldCapMs = 240000;  // 240s, well under the 600s suite
+    static constexpr int kVictimHoldMs =
+        kHealthyTransfers * 2 * kLargeTransferTimeoutMs < kHoldCapMs
+            ? kHealthyTransfers * 2 * kLargeTransferTimeoutMs
+            : kHoldCapMs;
+    static constexpr int kVictimHoldPolls = kVictimHoldMs * 1000 / kPollIntervalUs;
     // The isolation claim holds only while the fault is live, and the start gate
     // synchronizes nothing past entry: bystanders wait for the victim to arm, the
     // victim waits for their traffic before clearing, and the fatal count is read in
@@ -4152,23 +4165,12 @@ TEST_F(NetIbMPITest, FaultIsolationAcrossWorkers) {
                     return result;
                 }
 
-                // Hold the fault until the bystanders have finished, so their
-                // traffic really did share the device with a broken connection. Sized
-                // from what those transfers can legitimately take rather than from the
-                // generic gate: WorkerSendRecvRaw can spend kLargeTransferTimeoutMs in
-                // the FIFO slot wait and again in the completion wait for each message,
-                // so a 30 s hold can expire first and bury the bystander's real error
-                // under a complaint that it never finished.
-                // Clamped below the suite's own budget: unclamped this works out to
-                // exactly the 600 s every suite running this test carries, so the runner
-                // would kill the process group before the message below could print --
-                // the message this budget was widened to make room for.
-                static constexpr int kHoldCapMs = 240000;  // 240s, well under the 600s suite
-                static constexpr int kHoldPolls =
-                    (kHealthyTransfers * 2 * kLargeTransferTimeoutMs < kHoldCapMs
-                         ? kHealthyTransfers * 2 * kLargeTransferTimeoutMs
-                         : kHoldCapMs) * 1000 / kPollIntervalUs;
-                for (int poll = 0; poll < kHoldPolls; poll++) {
+                // Hold the fault until the bystanders have finished, so their traffic
+                // really did share the device with a broken connection. The budget is
+                // kVictimHoldPolls above, shared with the wait on the other side of this
+                // handshake, and sized from what those transfers can legitimately take
+                // rather than from the generic gate.
+                for (int poll = 0; poll < kVictimHoldPolls; poll++) {
                     if (bystandersDone.load(std::memory_order_acquire) >= kBystanders) break;
                     usleep(kPollIntervalUs);
                 }
@@ -4211,7 +4213,14 @@ TEST_F(NetIbMPITest, FaultIsolationAcrossWorkers) {
             if (rank == 1) {
                 // Read the count only once the victim is finished, so it covers
                 // the whole time the fault was live.
-                if (!waitForFlag(victimFinished, kWorkerGatePolls)) {
+                //
+                // Waited on the victim's own budget, not the generic gate. The victim may
+                // legitimately hold the fault for kVictimHoldMs; the generic gate is 30 s,
+                // eight times shorter, so this wait could expire while the victim was
+                // still doing exactly what it is supposed to and report it as never
+                // finishing -- the same way round as the complaint the hold above was
+                // widened to avoid.
+                if (!waitForFlag(victimFinished, kVictimHoldPolls)) {
                     result.ok = false;
                     result.msg = "the victim worker never finished";
                     return result;
